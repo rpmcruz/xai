@@ -3,6 +3,11 @@
 
 import torch, torchvision
 
+# In the case of ResNet-50:
+# layer_mid = features.layer2
+# layer_act = features.layer4[-1].conv3
+# layer_fc  = features.fc
+
 # https://arxiv.org/abs/1512.04150
 def CAM(model, layer_mid, layer_act, layer_fc, x, y):
     act = None
