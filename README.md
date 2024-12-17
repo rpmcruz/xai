@@ -1,5 +1,5 @@
-# xai
-Deep learning xAI methods and metrics.
+# xAI
+Small implementations of deep learning xAI interpretability methods and metrics.
 
 These are small implements of common xAI methods and metrics that are easy to understand and easy to adapt for any purpose.
 
