@@ -34,7 +34,7 @@ def GradCAM(model, layer_mid, layer_act, layer_fc, x, y):
         w = torch.mean(grad_output[0], (2, 3))
     fh = layer_act.register_forward_hook(act_fhook)
     bh = layer_act.register_full_backward_hook(act_bhook)
-    pred = model(x)['class']
+    pred = model(x)
     pred = pred[range(len(y)), y].sum()
     pred.backward()
     fh.remove()
@@ -49,8 +49,8 @@ def GradCAM(model, layer_mid, layer_act, layer_fc, x, y):
 def DeepLIFT(model, layer_mid, layer_act, layer_fc, x, y):
     baseline = torch.zeros_like(x)
     x.requires_grad = True
-    pred_baseline = model(baseline)['class'][range(len(y)), y]
-    pred_x = model(x)['class'][range(len(y)), y]
+    pred_baseline = model(baseline)[range(len(y)), y]
+    pred_x = model(x)[range(len(y)), y]
     delta = pred_x - pred_baseline
     delta.sum().backward()
     heatmap = torch.mean((x - baseline) * x.grad, 1)
@@ -66,7 +66,7 @@ def Occlusion(model, layer_mid, layer_act, layer_fc, x, y):
             occ_img = x.clone()
             occ_img[:, :, occ_x:occ_y+occ_h, occ_x:occ_x+occ_w] = 0
             with torch.no_grad():
-                prob = torch.softmax(model(occ_img)['class'], 1)[range(len(y)), y]
+                prob = torch.softmax(model(occ_img), 1)[range(len(y)), y]
                 heatmap[:, occ_j, occ_i] = 1-prob
     return heatmap
 
@@ -98,7 +98,7 @@ def IBA(model, layer_mid, layer_act, layer_fc, x, y, lr=1, num_steps=100, sigma=
     optimizer = torch.optim.Adam([alpha], lr)
     for _ in range(num_steps):
         optimizer.zero_grad()
-        output = model(x)['class']
+        output = model(x)
         # L = LCE + βLI  (accurate, but minimize the information passed)
         # same code as the authors
         ce = torch.nn.functional.cross_entropy(output, y)

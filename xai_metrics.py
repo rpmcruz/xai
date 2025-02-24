@@ -1,45 +1,49 @@
 # 2024 Ricardo Cruz <ricardo.pdm.cruz@gmail.com> 
 # Implementation of interpretability metrics.
 
-import torchmetrics
+from torcheval import metrics
 import torch
 
-class PointingGame(torchmetrics.Metric):
-    # https://link.springer.com/article/10.1007/s11263-017-1059-x
+class MyMetric(metrics.Metric):
     def __init__(self):
         super().__init__()
-        self.add_state('correct', default=torch.tensor(0), dist_reduce_fx='sum')
-        self.add_state('total', default=torch.tensor(0), dist_reduce_fx='sum')
+        self.reset()
 
+    def reset(self):
+        self.num = self.den = 0
+
+    def merge_state(self, metrics):
+        for metric in metrics:
+            self.num += metric.num
+            self.den += metric.den
+        return self
+
+    def compute(self):
+        return self.num / self.den
+
+class PointingGame(MyMetric):
+    # https://link.springer.com/article/10.1007/s11263-017-1059-x
     def update(self, heatmaps, masks):
         heatmaps = torch.nn.functional.interpolate(heatmaps[:, None], masks.shape[-2:], mode='bilinear')
         heatmaps = heatmaps.view(len(heatmaps), -1)
         masks = masks.view(len(masks), -1)
-        self.correct += sum(masks[range(len(masks)), torch.argmax(heatmaps, 1)] != 0)
-        self.total += len(heatmaps)
+        self.num += sum(masks[range(len(masks)), torch.argmax(heatmaps, 1)] != 0)
+        self.den += len(heatmaps)
 
-    def compute(self):
-        return self.correct / self.total
-
-class DegradationScore(torchmetrics.Metric):
+class DegradationScore(MyMetric):
+    # if too slow, resize the heatmaps you provide to 7x7 or 8x8
     def __init__(self, model, score='acc'):
         super().__init__()
+        assert score in ['acc'], f'Unknown score "{score}"'
         self.model = model
         if score == 'acc':
             self.score = lambda ypred, y: (ypred == y).float()
-        else:
-            raise Exception(f'Unknown score: {score}')
-        self.add_state('areas', default=torch.tensor(0.), dist_reduce_fx='sum')
-        self.add_state('count', default=torch.tensor(0), dist_reduce_fx='sum')
 
     def update(self, images, true_classes, heatmaps):
         lerf = self.degradation_curve('lerf', self.model, self.score, images, true_classes, heatmaps)
         morf = self.degradation_curve('morf', self.model, self.score, images, true_classes, heatmaps)
-        self.areas += torch.sum(torch.mean(lerf - morf, 1))
-        self.count += len(images)
-
-    def compute(self):
-        return self.areas / self.count
+        self.num += torch.sum(torch.mean(lerf - morf, 1))
+        self.den += len(images)
 
     def degradation_curve(self, curve_type, model, score_fn, images, true_classes, heatmaps):
         # Given an explanation map, occlude by 8x8 creating two curves: least
@@ -66,64 +70,35 @@ class DegradationScore(torchmetrics.Metric):
                 occlusions[i, :, ci*yscale:(ci+1)*yscale, ri*xscale:(ri+1)*xscale] = 0
             with torch.no_grad():
                 ypred = model(occlusions)
-            if type(ypred) == dict:
-                ypred = ypred['class']
-            else:
-                ypred = ypred[0]
             ypred = ypred.argmax(1)
             score = score_fn(ypred, true_classes)
             scores.append(score)
         return torch.stack(scores, 1)
 
-class Density(torchmetrics.Metric):
+class Density(MyMetric):
     # to measure how sparse the explanation is
-    def __init__(self):
-        super().__init__()
-        self.add_state('l1', default=torch.tensor(0.), dist_reduce_fx='sum')
-        self.add_state('total', default=torch.tensor(0), dist_reduce_fx='sum')
-
     def update(self, heatmaps):
         assert len(heatmaps.shape) == 3, f'heatmaps have more than three dimensions: {heatmaps.shape}'
         heatmaps = heatmaps / heatmaps.amax((1, 2), True)
-        self.l1 += torch.sum(torch.mean(heatmaps, (1, 2)))
-        self.total += len(heatmaps)
+        self.num += torch.sum(torch.mean(heatmaps, (1, 2)))
+        self.den += len(heatmaps)
 
-    def compute(self):
-        return self.l1 / self.total
-
-class Entropy(torchmetrics.Metric):
+class Entropy(MyMetric):
     # to measure how sparse the explanation is
-    def __init__(self):
-        super().__init__()
-        self.add_state('entropy', default=torch.tensor(0.), dist_reduce_fx='sum')
-        self.add_state('total', default=torch.tensor(0), dist_reduce_fx='sum')
-
     def update(self, heatmaps):
         assert len(heatmaps.shape) == 3, f'heatmaps have more than three dimensions: {heatmaps.shape}'
         heatmaps = heatmaps / heatmaps.sum((1, 2), True)
         # avoid log(0) by replacing zeros with a very small value
         den = torch.prod(torch.tensor(heatmaps.shape[1:]))
-        self.entropy += -torch.sum(heatmaps * torch.log2(heatmaps+1e-12) / torch.log2(den))
-        self.total += len(heatmaps)
+        self.num += -torch.sum(heatmaps * torch.log2(heatmaps+1e-12) / torch.log2(den))
+        self.den += len(heatmaps)
 
-    def compute(self):
-        return self.entropy / self.total
-
-
-class TotalVariance(torchmetrics.Metric):
+class TotalVariance(MyMetric):
     # to measure how sparse the explanation is
-    def __init__(self):
-        super().__init__()
-        self.add_state('variance', default=torch.tensor(0.), dist_reduce_fx='sum')
-        self.add_state('total', default=torch.tensor(0), dist_reduce_fx='sum')
-
     def update(self, heatmaps):
         assert len(heatmaps.shape) == 3, f'heatmaps have more than three dimensions: {heatmaps.shape}'
         heatmaps = heatmaps / heatmaps.amax((1, 2), True)
         dy = torch.mean(torch.abs(heatmaps[:, 1:]-heatmaps[:, :-1]), (1, 2))
         dx = torch.mean(torch.abs(heatmaps[:, :, 1:]-heatmaps[:, :, :-1]), (1, 2))
-        self.variance += torch.sum((dx + dy)/2)
-        self.total += len(heatmaps)
-
-    def compute(self):
-        return self.variance / self.total
+        self.num += torch.sum((dx + dy)/2)
+        self.den += len(heatmaps)
