@@ -75,6 +75,23 @@ class DegradationScore(MyMetric):
             scores.append(score)
         return torch.stack(scores, 1)
 
+class BalancedDegradationScore(DegradationScore):
+    # balanced version of the degradation score
+    def __init__(self, model, num_classes, score='acc'):
+        super().__init__(model, score)
+        self.num = torch.zeros(num_classes)
+        self.den = torch.zeros(num_classes)
+
+    def update(self, images, true_classes, heatmaps):
+        lerf = self.degradation_curve('lerf', self.model, self.score, images, true_classes, heatmaps)
+        morf = self.degradation_curve('morf', self.model, self.score, images, true_classes, heatmaps)
+        for i, k in enumerate(true_classes):
+            self.num[k] += torch.mean(lerf[i] - morf[i])
+            self.den[k] += 1
+
+    def compute(self):
+        return torch.mean(self.num / self.den)
+
 class Density(MyMetric):
     # to measure how sparse the explanation is
     def update(self, heatmaps):
